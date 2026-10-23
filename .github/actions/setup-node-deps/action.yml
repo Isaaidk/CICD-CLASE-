@@ -1,0 +1,17 @@
+name: Setup Node y dependencias
+description: Instala Node con caché de npm y ejecuta npm ci (reutilizable por todos los jobs)
+
+inputs:
+  node-version:
+    description: Versión de Node
+    default: '22'
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: npm # CACHE: reutiliza ~/.npm entre ejecuciones según package-lock.json
+    - run: npm ci
+      shell: bash

@@ -1,0 +1,130 @@
+name: CI
+
+# EJECUCIÓN SELECTIVA (ramas y rutas):
+# - main y develop: pipeline completo en cada push
+# - feature/**, hotfix/**: pipeline de verificación
+# - Pull requests hacia main/develop
+# - Se ignoran cambios que solo tocan documentación
+on:
+  push:
+    branches: [main, develop, 'feature/**', 'hotfix/**']
+    paths-ignore: ['**.md', 'docs/**']
+  pull_request:
+    branches: [main, develop]
+    paths-ignore: ['**.md', 'docs/**']
+
+# Cancela ejecuciones antiguas de la misma rama cuando llega un commit nuevo
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ---- Etapa 1 y 2: calidad de código y pruebas, EN PARALELO ----
+  lint:
+    name: Etapa 1 - Lint (ESLint)
+    uses: ./.github/workflows/_node-task.yml
+    with:
+      name: ESLint
+      script: lint
+
+  typecheck:
+    name: Etapa 1 - Tipos (TypeScript)
+    uses: ./.github/workflows/_node-task.yml
+    with:
+      name: TypeScript
+      script: typecheck
+
+  test:
+    name: Etapa 2 - Pruebas unitarias y cobertura
+    uses: ./.github/workflows/_node-task.yml
+    with:
+      name: Vitest
+      script: test:coverage
+      artifact-name: coverage
+      artifact-path: coverage/
+
+  # ---- Etapa 3: build (solo si pasaron las etapas anteriores) ----
+  build:
+    name: Etapa 3 - Build
+    needs: [lint, typecheck, test]
+    uses: ./.github/workflows/_node-task.yml
+    with:
+      name: Build
+      script: build
+      artifact-name: dist
+      artifact-path: dist/
+
+  # ---- Etapa 4: entrega, SOLO en main ----
+  release:
+    name: Etapa 4 - Entrega (solo main)
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: Publicar build como artefacto de release
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ github.sha }}
+          path: dist/
+          retention-days: 30
+
+  # ---- POST: notificaciones always / success / failure ----
+  notify:
+    name: Post - Notificaciones
+    needs: [lint, typecheck, test, build, release]
+    if: always() # ALWAYS: corre aunque falle cualquier etapa
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+      pull-requests: write
+    steps:
+      - name: Resultado de etapas
+        id: result
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          failed=$(echo "$NEEDS" | jq -r 'to_entries[] | select(.value.result=="failure" or .value.result=="cancelled") | .key' | paste -sd, -)
+          echo "failed=$failed" >> "$GITHUB_OUTPUT"
+
+      - name: ALWAYS - Resumen del pipeline
+        run: |
+          {
+            echo "## Resumen del pipeline"
+            echo "| Etapa | Resultado |"
+            echo "|---|---|"
+            echo '${{ toJSON(needs) }}' | jq -r 'to_entries[] | "| \(.key) | \(.value.result) |"'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: SUCCESS - Notificar éxito a GitHub
+        if: ${{ steps.result.outputs.failed == '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${{ github.repository }}/statuses/${{ github.sha }}" \
+            -f state=success -f context="pipeline/resumen" \
+            -f description="Todas las etapas pasaron" \
+            -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo "::notice title=Pipeline OK::Todas las etapas pasaron en ${{ github.ref_name }}"
+
+      - name: FAILURE - Notificar fallo a GitHub
+        if: ${{ steps.result.outputs.failed != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FAILED: ${{ steps.result.outputs.failed }}
+        run: |
+          gh api "repos/${{ github.repository }}/statuses/${{ github.sha }}" \
+            -f state=failure -f context="pipeline/resumen" \
+            -f description="Fallaron: $FAILED" \
+            -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo "::error title=Pipeline FALLÓ::Etapas con error: $FAILED"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            gh pr comment "${{ github.event.pull_request.number }}" --repo "${{ github.repository }}" \
+              --body "Pipeline fallido. Etapas con error: **$FAILED**. [Ver ejecución](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+          fi
