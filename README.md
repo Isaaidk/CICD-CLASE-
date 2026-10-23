@@ -75,3 +75,10 @@ export default defineConfig([
 ```
 
 # CICD-CLASE-
+
+## Pipeline CI
+
+GitHub Actions (.github/workflows/ci.yml). Ramas: main (producción), develop (integración), feature/* y hotfix/*.
+Etapas: lint + typecheck + test (paralelo) -> build -> release (solo main) -> notify (always/success/failure).
+Optimizaciones: ejecución paralela, caché de npm, ejecución selectiva (ramas/rutas, concurrency), workflow reutilizable (_node-task.yml) y composite action (setup-node-deps).
+

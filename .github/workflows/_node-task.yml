@@ -1,0 +1,38 @@
+# Workflow reutilizable: ejecuta un script de npm con dependencias en caché.
+name: Tarea Node (reutilizable)
+
+on:
+  workflow_call:
+    inputs:
+      name:
+        description: Nombre descriptivo de la etapa
+        type: string
+        required: true
+      script:
+        description: Script de npm a ejecutar
+        type: string
+        required: true
+      artifact-name:
+        description: Si se indica, sube artifact-path con este nombre
+        type: string
+        default: ''
+      artifact-path:
+        type: string
+        default: ''
+
+jobs:
+  run:
+    name: ${{ inputs.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node-deps
+      - run: npm run ${{ inputs.script }}
+      - name: Subir artefacto
+        if: ${{ inputs.artifact-name != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ${{ inputs.artifact-path }}
+          retention-days: 7
